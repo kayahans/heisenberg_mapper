@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from pymatgen.analysis.magnetism import CollinearMagneticStructureAnalyzer
 from pymatgen.io.vasp.outputs import Vasprun, Outcar
+from pymatgen.core import Structure
 from pymatgen.analysis.local_env import CutOffDictNN
 import glob, pdb
 import pickle
@@ -20,17 +21,24 @@ def parse_dirs(structures, energies, species, magmoms, magmoms_all):
     
     except:
         for dirs in directories:
+            energy = 0
             try:
                 vasprun     = Vasprun(dirs+'/vasprun.xml')
                 structure   = vasprun.ionic_steps[-1]['structure']
                 energy      = vasprun.ionic_steps[-1]['e_wo_entrp']
             except:
-                print("vasprun.xml at {} could not be read successfully! Exiting".format(dirs))
-                exit()
+                try:
+                    structure = Structure.from_file(dirs+'/CONTCAR')
+                except:
+                    print("vasprun.xml or CONTCAR at {} could not be read successfully! Exiting".format(dirs))
+                    exit()
+                #end 
             #end
             try:
                 outcar      = Outcar(dirs+"/OUTCAR")
                 magnetization     = outcar.magnetization
+                if energy == 0:
+                    energy = outcar.final_energy
             except:
                 print("OUTCAR at {} could not be read successfully! Exiting".format(dirs))
                 exit()
@@ -224,7 +232,7 @@ if __name__ == "__main__":
     species    = []
     magmoms  = []
     magmoms_all  = []
-    # Parse subdirectories. Each subdirectory should contain OUTCAR and vasprun.xml
+    # Parse subdirectories. Each subdirectory should contain OUTCAR plus {vasprun.xml or CONTCAR}
     structures, energies, species, magmoms, magmoms_all = parse_dirs(structures, energies, species, magmoms, magmoms_all)
     print("Printing Structures")
     print(structures)
