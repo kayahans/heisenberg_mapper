@@ -1,56 +1,74 @@
 #!/usr/bin/env python
-from pymatgen.core import Structure
-from pymatgen.apps.borg.hive import VaspToComputedEntryDrone
 from pymatgen.analysis.magnetism import CollinearMagneticStructureAnalyzer
-from pymatgen.io.vasp.outputs import Vasprun
+from pymatgen.io.vasp.outputs import Vasprun, Outcar
+from pymatgen.analysis.local_env import CutOffDictNN
 import glob, pdb
-from pprint import pprint
-from atomate.vasp.drones import VaspDrone
 import pickle
-
+import numpy as np
+import pandas as pd
 import warnings
 warnings.filterwarnings("ignore")
 
-drone = VaspDrone(parse_locpot = False,
-                  parse_bader  = False,
-                  store_volumetric_data = ())
-# drone = VaspToComputedEntryDrone(inc_structure=True)
+
 directories = glob.glob("./*/")
 
-structures = []
-energies   = []
-species    = []
-magmoms  = []
-magmoms_all  = []
-try:
-  # Try to load first if parsed before
-  structures = pickle.load(open("structures.p", "rb"))
-  energies   = pickle.load(open("energies.p",   "rb" ))
-except:
-  for dirs in directories:
+def parse_dirs(structures, energies, species, magmoms, magmoms_all):
     try:
-      entry = drone.assimilate(dirs)
-      structure = entry['output']['structure']
-      structure = Structure.from_dict(structure)
-      mag_str=CollinearMagneticStructureAnalyzer(structure).get_structure_with_only_magnetic_atoms()
-      magmom = mag_str.site_properties['magmom']
-      
-      
-      structures.append(structure)
-      energies.append(entry['output']['energy'])
-      species.append([ii.name for ii in mag_str.species])
-      magmoms.append(magmom)
-      magmoms_all.append(CollinearMagneticStructureAnalyzer(structure).magmoms)
+        # Try to load first if parsed before
+        structures = pickle.load(open("structures.p", "rb"))
+        energies   = pickle.load(open("energies.p",   "rb" ))
+    
     except:
-      print("Skip directory {}".format(dirs))
+        for dirs in directories:
+            try:
+                vasprun     = Vasprun(dirs+'/vasprun.xml')
+                structure   = vasprun.ionic_steps[-1]['structure']
+                energy      = vasprun.ionic_steps[-1]['e_wo_entrp']
+            except:
+                print("vasprun.xml at {} could not be read successfully! Exiting".format(dirs))
+                exit()
+            #end
+            try:
+                outcar      = Outcar(dirs+"/OUTCAR")
+                magnetization     = outcar.magnetization
+            except:
+                print("OUTCAR at {} could not be read successfully! Exiting".format(dirs))
+                exit()
+            #end 
+            
+            magmom      = [x['tot'] for x in magnetization]
+            structure.add_site_property("magmom", magmom)
+            mag_str     = CollinearMagneticStructureAnalyzer(structure, threshold_nonmag = 0.5, make_primitive=False).get_structure_with_only_magnetic_atoms(make_primitive=False)
+            magmom      = mag_str.site_properties['magmom']
 
-  pprint(species)
-  pprint(magmoms)
-  pprint(energies)
-  pickle.dump(structures, open( "structures.p", "wb" ) )
-  pickle.dump(energies,   open( "energies.p", "wb" ) )
+            structures.append(mag_str)
+            energies.append(energy)
+            species.append([ii.name for ii in mag_str.species])
+            magmoms.append(magmom)
+            magmoms_all.append(CollinearMagneticStructureAnalyzer(structure, make_primitive=False).magmoms)
 
-input("Continue")
+            # Print report
+            print("Number of directories parsed: {}".format(len(directories)))
+            print("Name of directories: ", directories)
+            print("Saving to structures.p and energies.p")
+            if len(structures) != 0 and len(energies) != 0:
+                pickle.dump(structures, open( "structures.p", "wb" ) )
+                pickle.dump(energies,   open( "energies.p", "wb" ) )
+            print("Saved to .p files")
+    #end try
+
+    print("Printing input")
+    print("Lattice(A) Energy(eV) Magmoms(m_B) Atoms")
+    for idx in range(len(structures)):
+        structure = structures[idx]
+        energy = energies[idx]
+        magmoms = structure.site_properties['magmom']
+        atoms = [x.name for x in structure.species]
+        print("{} {} {} {}".format(structure.lattice.abc, energy, magmoms, atoms))
+    #end for
+    print("End of printing input\n")
+    return structures, energies, species, magmoms, magmoms_all
+#end def parse_dirs
 
 def get_zero_dict_with_keys(input_dict):
     "Works with only two layers of keys"
@@ -68,15 +86,21 @@ def get_key_tree(input_dict):
             tree_list.append(key1+'-'+key2)
     return tree_list
 
-
-import numpy as np
-import pandas as pd
-from pymatgen.analysis.local_env import CutOffDictNN
 class HeisenbergMapper:
-    def __init__(self, structures, energies, natoms_max):
+    def __init__(self, structures, energies):
         self.structures = structures
         self.energies = energies
+        natoms_max = -1
+        for structure in structures:
+            if structure.num_sites > natoms_max:
+                natoms_max = structure.num_sites
+
         self.natoms_max = natoms_max
+
+        if len(self.structures) < 2:
+            print("With less than 2 structures, it is not possible to make a fit. Num structures : {}. Exiting!".format(len(structures)))
+            exit()
+        #end if
 
     def get_ex_mat(self, interactions, cutoff_nn):
         columns = ["E", "E0"]
@@ -85,7 +109,7 @@ class HeisenbergMapper:
         for key in interaction_list:
             columns.append(key)
         ex_mat = pd.DataFrame(columns=columns)
-
+        
         sgraph_index = 0
         for str_idx, structure in enumerate(self.structures):
             spins = get_zero_dict_with_keys(interactions)
@@ -124,7 +148,6 @@ class HeisenbergMapper:
 
     def fit(self):
         # Fit all the data using least squares
-        pdb.set_trace()
         self.j_ij = np.linalg.lstsq(self.H, self.E, rcond=None)[0]
         self.E_fit = np.dot(self.H, self.j_ij)
         self.mad = np.average(np.abs(self.E-self.E_fit))
@@ -145,6 +168,7 @@ class HeisenbergMapper:
     
     def report(self):
         print("MAD = {} num_param = {}".format(np.round(self.mad,4), self.num_interactions))
+        print("Units: E0=eV, nnx=meV")
         print(self.ex_params)
         print(self.ex_mat)
     
@@ -192,20 +216,23 @@ class HeisenbergMapper:
                     test_error_min = test_error_mean
                     print("Minimum\n\tTrain error {:.4f}+/-{:.5f}\n\tTest error {:.4f}+/-{:.5f}\n\tparam_list {}".format(train_error_mean, train_error_std, test_error_mean, test_error_std, self.ex_mat.columns[np.array(param_list)+1]))
 
-try:
-    interactions = {'Cr-Cr': {'nn': (2.8, 3.1), 'nnn': (3.1, 3.5)},
-                    'Cr-Fe': {'nn': (2.8, 3.1), 'nnn': (3.1, 3.5)}}
-    cutoff_nn = CutOffDictNN({('Cr', 'Cr'): 3.5, ('Cr', 'Fe'): 3.5})
-    hm = HeisenbergMapper(structures, energies, 32)
+#end def HeisenbergMapper
+
+if __name__ == "__main__":
+    structures = []
+    energies   = []
+    species    = []
+    magmoms  = []
+    magmoms_all  = []
+    # Parse subdirectories. Each subdirectory should contain OUTCAR and vasprun.xml
+    structures, energies, species, magmoms, magmoms_all = parse_dirs(structures, energies, species, magmoms, magmoms_all)
+    print("Printing Structures")
+    print(structures)
+    print("End Printing Structures\n")
+    interactions = {'Fe-Fe': {'nn': (3.1, 3.4)}}
+    cutoff_nn = CutOffDictNN({('Fe', 'Fe'): 5.3})
+    hm = HeisenbergMapper(structures, energies)
     hm.get_ex_mat(interactions, cutoff_nn)
-    hm.cross_validation()
-    input("Cancel here and decide which interactions you want to keep. Then rerun the script erasing those interactions next")
-    # Below I decided to erase Cr-Cr 2nd nearest neighbor interactions and then perform the fit using all data points
-    intr_temp = interactions.copy()
-    del intr_temp['Cr-Cr']['nnn']
-    hm.get_ex_mat(intr_temp, cutoff_nn)
     hm.fit()
     hm.report()
-    hm.plot()
-except:
-    print("Structure probably changes symmetry, ")
+    #hm.plot()
