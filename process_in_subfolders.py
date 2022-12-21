@@ -54,15 +54,15 @@ def parse_dirs(structures, energies, species, magmoms, magmoms_all):
             species.append([ii.name for ii in mag_str.species])
             magmoms.append(magmom)
             magmoms_all.append(CollinearMagneticStructureAnalyzer(structure, make_primitive=False).magmoms)
-
-            # Print report
-            print("Number of directories parsed: {}".format(len(directories)))
-            print("Name of directories: ", directories)
-            print("Saving to structures.p and energies.p")
-            if len(structures) != 0 and len(energies) != 0:
-                pickle.dump(structures, open( "structures.p", "wb" ) )
-                pickle.dump(energies,   open( "energies.p", "wb" ) )
-            print("Saved to .p files")
+        # end for
+        # Print report
+        print("Number of directories parsed: {}".format(len(directories)))
+        print("Name of directories: ", directories)
+        print("Saving to structures.p and energies.p")
+        if len(structures) != 0 and len(energies) != 0:
+            pickle.dump(structures, open( "structures.p", "wb" ) )
+            pickle.dump(energies,   open( "energies.p", "wb" ) )
+        print("Saved to .p files")
     #end try
 
     print("Printing input")
@@ -110,7 +110,7 @@ class HeisenbergMapper:
             exit()
         #end if
 
-    def get_ex_mat(self, interactions, cutoff_nn):
+    def get_ex_mat(self, interactions, cutoff_nn, round_magmoms = True):
         columns = ["E", "E0"]
         interaction_list = get_key_tree(interactions)
         self.num_interactions = len(interaction_list)
@@ -122,7 +122,12 @@ class HeisenbergMapper:
         for str_idx, structure in enumerate(self.structures):
             spins = get_zero_dict_with_keys(interactions)
             counts = get_zero_dict_with_keys(interactions)
-            magmom = np.round(structure.site_properties['magmom'])
+            if round_magmoms:
+                magmom = np.round(structure.site_properties['magmom'])
+            else:
+                magmom = structure.site_properties['magmom']
+            #end if 
+
             for site_idx, site in enumerate(structure):
                 neighbors = cutoff_nn.get_nn_info(structure, site_idx)
                 for nn in neighbors:
@@ -240,7 +245,7 @@ if __name__ == "__main__":
     interactions = {'Fe-Fe': {'nn': (3.1, 3.4)}}
     cutoff_nn = CutOffDictNN({('Fe', 'Fe'): 5.3})
     hm = HeisenbergMapper(structures, energies)
-    hm.get_ex_mat(interactions, cutoff_nn)
+    hm.get_ex_mat(interactions, cutoff_nn, round_magmoms=True)
     hm.fit()
     hm.report()
     #hm.plot()
